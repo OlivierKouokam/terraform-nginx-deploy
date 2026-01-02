@@ -35,4 +35,3 @@ aws s3 rb s3://tf-state-mini-project --force
 
 aws dynamodb delete-table --table-name terraform-state-lock
 
-<img width="1466" height="588" alt="image" src="./app/graph-2.png" />

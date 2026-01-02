@@ -108,12 +108,13 @@ resource "null_resource" "output_metadata" {
                 module.nginx_ebs, aws_volume_attachment.nginx_ebs_attachment]
   
   provisioner "remote-exec" {
+    on_failure = continue
     connection {
       type        = "ssh"
-      user        = "ubuntu"  # ou "ec2-user" selon ton AMI
+      user        = "ubuntu"
       private_key = file(var.private_key_path)
       host        = module.nginx_eip.eip_public_ip
-      timeout     = "10m"  # Timeout de 10 minutes
+      timeout     = "2m"
     }
 
     inline = [
@@ -121,35 +122,74 @@ resource "null_resource" "output_metadata" {
       "sudo apt update -y",
       "sudo apt install -y nginx git",
 
-      "echo '2. Préparation du volume EBS (/dev/xvdh)'",
-      # Attendre que le périphérique soit disponible
-      "while [ ! -b /dev/sdh ] && [ ! -b /dev/xvdh ]; do sleep 2; echo 'En attente du volume EBS...'; done",
-      # Identifier le bon nom de périphérique
-      "if [ -b /dev/sdh ]; then DEVICE='/dev/sdh'; elif [ -b /dev/xvdh ]; then DEVICE='/dev/xvdh'; else exit 1; fi",
-      "sudo blkid /dev/xvdh || sudo mkfs -t ext4 /dev/xvdh",    # Formater le disque tel n'est pas le cas
-      "sudo mkdir -p /mnt/ebs",                                 # Créer point de montage
-      "sudo mount /dev/xvdh /mnt/ebs",                          # Monter le disque
-      "grep -qs '/mnt/ebs' /etc/fstab || echo '/dev/xvdh /mnt/ebs ext4 defaults,nofail 0 2' | sudo tee -a /etc/fstab",  # Montage automatique
+      "echo '2. Recherche du volume EBS attaché'",
+      # Attendre que le volume soit disponible et détecter son nom
+      "DEVICE=''",
+      "for i in {1..30}; do",
+      "  if lsblk | grep -q 'xvdh'; then",
+      "    DEVICE='/dev/xvdh'",
+      "    break",
+      "  elif lsblk | grep -q 'sdh'; then",
+      "    DEVICE='/dev/sdh'",
+      "    break",
+      "  elif lsblk | grep -q 'nvme'; then",
+      "    # Pour les instances modernes (t3, m5, etc.)",
+      "    DEVICE=$(lsblk | grep 'disk' | tail -1 | awk '{print \"/dev/\"$1}')",
+      "    break",
+      "  fi",
+      "  sleep 2",
+      "  echo 'En attente du volume EBS... ($i/30)'",
+      "done",
+      
+      "if [ -z \"$DEVICE\" ]; then echo 'Volume EBS non trouvé'; exit 1; fi",
+      "echo \"Volume détecté: $DEVICE\"",
+      
+      # Formater si nécessaire
+      "if ! sudo blkid $DEVICE; then",
+      "  echo 'Formatage du volume...'",
+      "  sudo mkfs -t ext4 $DEVICE",
+      "fi",
+      
+      "sudo mkdir -p /mnt/ebs",
+      "sudo mount $DEVICE /mnt/ebs",
+      
+      # Ajouter au fstab uniquement si pas déjà présent
+      "if ! grep -qs '/mnt/ebs' /proc/mounts; then",
+      "  echo 'Montage du volume...'",
+      "  sudo mount $DEVICE /mnt/ebs",
+      "fi",
+      
+      "if ! grep -qs '/mnt/ebs' /etc/fstab; then",
+      "  echo '$DEVICE /mnt/ebs ext4 defaults,nofail 0 2' | sudo tee -a /etc/fstab",
+      "fi",
 
-      "echo '3. Cloner le site dans le dossier temporaire'",
+      "echo '3. Cloner le site'",
       "rm -rf /tmp/site",
       "git clone https://github.com/diranetafen/static-website-example.git /tmp/site",
 
-      # 4. Copier les fichiers dans le volume EBS
+      "echo '4. Copier les fichiers dans le volume EBS'",
       "sudo cp -r /tmp/site/* /mnt/ebs/",
 
-      # 5. Modifier le titre du site
+      "echo '5. Modifier le titre du site'",
       "sudo sed -i 's|<h1>Dimension</h1>|<h1>Terraform Mini-Project</h1>|' /mnt/ebs/index.html",
 
-      # 6. Donner les bons droits à Nginx
+      "echo '6. Configurer les permissions'",
       "sudo chown -R www-data:www-data /mnt/ebs",
+      "sudo chmod -R 755 /mnt/ebs",
 
-      # 7. Rediriger /var/www/html vers /mnt/ebs
+      "echo '7. Configurer Nginx'",
       "sudo rm -rf /var/www/html",
       "sudo ln -s /mnt/ebs /var/www/html",
 
-      # 8. Redémarrer Nginx
-      "sudo systemctl restart nginx"
+      # Vérifier la configuration Nginx avant redémarrage
+      "sudo nginx -t",
+      
+      "echo '8. Redémarrer Nginx'",
+      "sudo systemctl restart nginx",
+      
+      # Vérifier que Nginx fonctionne
+      "sleep 5",
+      "sudo systemctl is-active --quiet nginx && echo 'Nginx est en cours d\\'exécution' || echo 'Problème avec Nginx'"
     ]
   }
 

@@ -1,0 +1,1 @@
+NGINX EC2 PUBLIC_IP: 3.223.97.117 - NGINX EC2 PUBLIC_DNS: ec2-3-223-97-117.compute-1.amazonaws.com  
